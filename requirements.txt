@@ -1,10 +1,10 @@
 # Выполнение HTTP-запросов к NewsAPI и Telegram API
-requests
+requests==2.34.2
 
 # Загрузка API-ключей и токенов из файла .env 
-python-dotenv 
+python-dotenv==1.2.2
 
 # Создание команд, кнопок и обработчиков Telegram-бота
-python-telegram-bot
+python-telegram-bot==22.8
 
 # pip install -r requirements.txt

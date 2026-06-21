@@ -1,5 +1,14 @@
+# Подключаем инструменты асинхронного выполнения
+import asyncio
+
+# Подключаем стандартный модуль журналирования
+import logging
+
 # Подключаем стандартный модуль для переменных окружения
 import os
+
+# Подключаем обработчик журналов с ротацией
+from logging.handlers import RotatingFileHandler
 
 # Подключаем библиотеку для запросов к NewsAPI
 import requests
@@ -18,6 +27,41 @@ from telegram.ext import (
     ContextTypes,
 )
 
+# Настраиваем вывод событий в терминал и файл bot.log
+logging.basicConfig(
+    # Указываем формат строки журнала
+    format="%(asctime)s | %(levelname)s | %(message)s",
+
+    # Записываем информационные сообщения и ошибки
+    level=logging.INFO,
+
+    # Указываем места сохранения журнала
+    handlers=[
+        # Записываем события в файл с ограниченным размером
+        RotatingFileHandler(
+            # Указываем имя основного файла
+            "bot.log",
+
+            # Ограничиваем один файл одним мегабайтом
+            maxBytes=1_000_000,
+
+            # Сохраняем три предыдущих файла
+            backupCount=3,
+
+            # Используем кодировку UTF-8
+            encoding="utf-8",
+        ),
+
+        # Одновременно выводим события в терминал
+        logging.StreamHandler(),
+    ],
+)
+
+# Не записываем HTTP-запросы с токеном в журнал
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# Создаём объект журнала для текущего файла
+logger = logging.getLogger(__name__)
 
 # Загружаем переменные из файла .env
 load_dotenv()
@@ -28,11 +72,31 @@ news_api_key = os.getenv("NEWS_API_KEY")
 # Получаем токен Telegram-бота
 telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Проверяем наличие ключей
-if not news_api_key or not telegram_token:
-    # Останавливаем программу, если ключей нет
-    raise RuntimeError("NEWS_API_KEY или TELEGRAM_BOT_TOKEN не найден")
+# Получаем разрешённый Chat ID из .env
+allowed_chat_id_text = os.getenv("TELEGRAM_CHAT_ID")
 
+# Проверяем наличие всех секретных настроек
+if not news_api_key or not telegram_token or not allowed_chat_id_text:
+    # Останавливаем программу при отсутствии настройки
+    raise RuntimeError("Не все настройки найдены в .env")
+
+# Преобразуем Chat ID из строки в число
+allowed_chat_id = int(allowed_chat_id_text)
+
+
+# Проверяем доступ текущего пользователя
+def is_access_allowed(update: Update):
+    # Получаем чат из обновления Telegram
+    chat = update.effective_chat
+
+    # Разрешаем доступ только нужному Chat ID
+    return chat is not None and chat.id == allowed_chat_id
+
+
+# Создаём собственную ошибку для ответов NewsAPI
+class NewsAPIError(Exception):
+    # Дополнительная логика пока не требуется
+    pass
 
 # Создаём главное меню
 def create_main_menu():
@@ -61,11 +125,27 @@ def create_main_menu():
     return InlineKeyboardMarkup(buttons)
 
 
+
+
 # Обрабатываем команду /start
 async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    # Проверяем доступ пользователя
+    if not is_access_allowed(update):
+        # Записываем попытку доступа в журнал
+        logger.warning(
+            "Запрещённый доступ: chat_id=%s",
+            update.effective_chat.id,
+        )
+
+        # Сообщаем пользователю об отказе
+        await update.message.reply_text("Доступ запрещён.")
+
+        # Прекращаем выполнение функции
+        return
+
     # Отправляем приветствие и главное меню
     await update.message.reply_text(
      "Выберите способ получения новостей:\n\n"
@@ -85,8 +165,6 @@ def get_articles(mode, value):
         # Запрашиваем максимум шесть статей
         "pageSize": 6,
 
-        # Передаём API-ключ
-        "apiKey": news_api_key,
     }
 
     # Проверяем, выбран ли конкретный источник
@@ -110,6 +188,9 @@ def get_articles(mode, value):
         # Передаём параметры запроса
         params=news_params,
 
+        # Передаём API-ключ в защищённом HTTP-заголовке
+        headers={"X-Api-Key": news_api_key},
+
         # Ограничиваем время ожидания
         timeout=10,
     )
@@ -120,8 +201,16 @@ def get_articles(mode, value):
     # Преобразуем JSON в словарь
     news_data = response.json()
 
-    # Возвращаем список статей
-    return news_data["articles"]
+    # Проверяем внутренний статус NewsAPI
+    if news_data.get("status") != "ok":
+        # Получаем описание ошибки
+        error_message = news_data.get("message", "Неизвестная ошибка NewsAPI")
+
+        # Передаём ошибку вызывающему коду
+        raise NewsAPIError(error_message)
+
+    # Возвращаем статьи или пустой список
+    return news_data.get("articles", [])
 
 
 # Обрабатываем нажатия на кнопки
@@ -131,6 +220,23 @@ async def handle_button(
 ):
     # Получаем информацию о нажатой кнопке
     query = update.callback_query
+
+    # Проверяем доступ пользователя
+    if not is_access_allowed(update):
+        # Показываем уведомление об отказе
+        await query.answer(
+            "Доступ запрещён.",
+            show_alert=True,
+        )
+
+        # Записываем попытку в журнал
+        logger.warning(
+            "Запрещённое нажатие: chat_id=%s",
+            update.effective_chat.id,
+        )
+
+        # Прекращаем обработку кнопки
+        return
 
     # Подтверждаем получение нажатия Telegram
     await query.answer()
@@ -341,8 +447,51 @@ async def handle_button(
         # Показываем состояние загрузки
         await query.edit_message_text("Получаю новости...")
 
-        # Получаем статьи от NewsAPI
-        articles = get_articles(mode, value)
+        # Пытаемся получить статьи
+        try:
+            # Выполняем синхронный запрос в отдельном потоке
+            articles = await asyncio.to_thread(
+                # Передаём вызываемую функцию
+                get_articles,
+
+                # Передаём режим поиска
+                mode,
+
+                # Передаём источник или категорию
+                value,
+            )
+
+        # Перехватываем сетевую ошибку или ошибку ответа NewsAPI
+        except (requests.RequestException, NewsAPIError):
+            # Записываем подробности ошибки в bot.log
+            logger.exception("Ошибка запроса к NewsAPI")
+
+            # Показываем пользователю понятное сообщение
+            await query.edit_message_text(
+                "Не удалось получить новости. Попробуйте позже.",
+                reply_markup=create_main_menu(),
+            )
+
+            # Прекращаем обработку
+            return
+
+        # Проверяем, вернулись ли статьи
+        if not articles:
+            # Записываем пустой результат в журнал
+            logger.info(
+                "Новости не найдены: mode=%s, value=%s",
+                mode,
+                value,
+            )
+
+            # Сообщаем пользователю об отсутствии статей
+            await query.edit_message_text(
+                "По выбранным параметрам новости не найдены.",
+                reply_markup=create_main_menu(),
+            )
+
+            # Прекращаем обработку
+            return
 
         # Перебираем полученные статьи
         for article in articles:
@@ -378,6 +527,34 @@ async def handle_button(
             reply_markup=create_main_menu(),
         )
 
+# Обрабатываем неожиданные ошибки Telegram-бота
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    # Записываем техническую информацию в журнал
+    logger.error(
+        "Необработанная ошибка Telegram-бота",
+        exc_info=context.error,
+    )
+
+    # Проверяем, что ошибка связана с обновлением Telegram
+    if isinstance(update, Update) and update.effective_chat:
+        # Пытаемся сообщить пользователю об ошибке
+        try:
+            # Отправляем сообщение в текущий чат
+            await context.bot.send_message(
+                # Передаём идентификатор текущего чата
+                chat_id=update.effective_chat.id,
+
+                # Передаём понятное сообщение пользователю
+                text="Произошла внутренняя ошибка. Попробуйте ещё раз.",
+            )
+
+        # Перехватываем ошибку отправки уведомления
+        except Exception:
+            # Записываем её в журнал
+            logger.exception("Не удалось сообщить пользователю об ошибке")
 
 # Создаём и запускаем приложение
 def main():
@@ -389,6 +566,9 @@ def main():
 
     # Добавляем обработчик всех кнопок
     application.add_handler(CallbackQueryHandler(handle_button))
+
+    # Подключаем общий обработчик ошибок
+    application.add_error_handler(error_handler)
 
     # Запускаем постоянное получение обновлений Telegram
     application.run_polling()
