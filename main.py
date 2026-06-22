@@ -72,26 +72,10 @@ news_api_key = os.getenv("NEWS_API_KEY")
 # Получаем токен Telegram-бота
 telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Получаем разрешённый Chat ID из .env
-allowed_chat_id_text = os.getenv("TELEGRAM_CHAT_ID")
-
 # Проверяем наличие всех секретных настроек
-if not news_api_key or not telegram_token or not allowed_chat_id_text:
-    # Останавливаем программу при отсутствии настройки
-    raise RuntimeError("Не все настройки найдены в .env")
-
-# Преобразуем Chat ID из строки в число
-allowed_chat_id = int(allowed_chat_id_text)
-
-
-# Проверяем доступ текущего пользователя
-def is_access_allowed(update: Update):
-    # Получаем чат из обновления Telegram
-    chat = update.effective_chat
-
-    # Разрешаем доступ только нужному Chat ID
-    return chat is not None and chat.id == allowed_chat_id
-
+if not news_api_key or not telegram_token:
+    # Останавливаем программу, если ключей нет
+    raise RuntimeError("NEWS_API_KEY или TELEGRAM_BOT_TOKEN не найден")
 
 # Создаём собственную ошибку для ответов NewsAPI
 class NewsAPIError(Exception):
@@ -132,19 +116,6 @@ async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    # Проверяем доступ пользователя
-    if not is_access_allowed(update):
-        # Записываем попытку доступа в журнал
-        logger.warning(
-            "Запрещённый доступ: chat_id=%s",
-            update.effective_chat.id,
-        )
-
-        # Сообщаем пользователю об отказе
-        await update.message.reply_text("Доступ запрещён.")
-
-        # Прекращаем выполнение функции
-        return
 
     # Отправляем приветствие и главное меню
     await update.message.reply_text(
@@ -213,30 +184,18 @@ def get_articles(mode, value):
     return news_data.get("articles", [])
 
 
+
+
 # Обрабатываем нажатия на кнопки
 async def handle_button(
+    # Получаем обновление Telegram
     update: Update,
+
+    # Получаем контекст Telegram-бота
     context: ContextTypes.DEFAULT_TYPE,
 ):
     # Получаем информацию о нажатой кнопке
     query = update.callback_query
-
-    # Проверяем доступ пользователя
-    if not is_access_allowed(update):
-        # Показываем уведомление об отказе
-        await query.answer(
-            "Доступ запрещён.",
-            show_alert=True,
-        )
-
-        # Записываем попытку в журнал
-        logger.warning(
-            "Запрещённое нажатие: chat_id=%s",
-            update.effective_chat.id,
-        )
-
-        # Прекращаем обработку кнопки
-        return
 
     # Подтверждаем получение нажатия Telegram
     await query.answer()
@@ -261,6 +220,12 @@ async def handle_button(
                     "CBS News",
                     callback_data="source:cbs-news",
                 ),
+
+                # Создаём кнопку CNN
+                InlineKeyboardButton(
+                    "CNN",
+                    callback_data="source:cnn",
+                ),
             ],
 
             # Вторая строка источников
@@ -275,6 +240,12 @@ async def handle_button(
                 InlineKeyboardButton(
                     "Politico",
                     callback_data="source:politico",
+                ),
+
+                # Создаём кнопку BBC News
+                InlineKeyboardButton(
+                    "BBC News",
+                    callback_data="source:bbc-news",
                 ),
             ],
 
@@ -291,21 +262,13 @@ async def handle_button(
                     "The Verge",
                     callback_data="source:the-verge",
                 ),
-            ],
 
-            # Четвёртая строка источников
-            [
-                # Создаём кнопку CNN
+                # Создаём кнопку The Verge
                 InlineKeyboardButton(
-                    "CNN",
-                    callback_data="source:cnn",
+                    "Time",
+                    callback_data="source:time",
                 ),
 
-                # Создаём кнопку BBC News
-                InlineKeyboardButton(
-                    "BBC News",
-                    callback_data="source:bbc-news",
-                ),
             ],
 
             # Последняя строка меню
@@ -341,6 +304,10 @@ async def handle_button(
                     "Бизнес",
                     callback_data="category:business",
                 ),
+                InlineKeyboardButton(
+                    "Спорт",
+                    callback_data="category:sports",
+                ),
             ],
 
             # Вторая строка категорий
@@ -352,14 +319,6 @@ async def handle_button(
                 InlineKeyboardButton(
                     "Наука",
                     callback_data="category:science",
-                ),
-            ],
-
-            # Третья строка категорий
-            [
-                InlineKeyboardButton(
-                    "Спорт",
-                    callback_data="category:sports",
                 ),
                 InlineKeyboardButton(
                     "Здоровье",
